@@ -215,7 +215,7 @@ main = do
       logInfo $ "Fetched " <> show (length storedListings) <> " existing listings"
       let newListings = listings \\ storedListings
       logInfo $ "Saving " <> show (length newListings) <> " new listings..."
-      traverse_ storeListings $ chunks 11 newListings
+      traverse_ storeListings $ chunks 10 newListings
       logInfo "Done!"
   where
     opts :: ParserInfo Args
