@@ -173,11 +173,11 @@ parsePrice s = case readP_to_S priceParser (unpack s) of
 getStoredListings :: RIO [Listing]
 getStoredListings = do
   (url, params) <- airtableApiUrl
-  runReq defaultHttpConfig $ unfoldMapM (fetchAll url params) AirtableFirst
+  runReq defaultHttpConfig $ unfoldMapM (fetchPage url params) AirtableFirst
   where
-    fetchAll :: Url 'Https -> Option 'Https -> AirtablePage -> Req (Maybe ([Listing], AirtablePage))
-    fetchAll _ _ AirtableLast = return Nothing
-    fetchAll url params offset = do
+    fetchPage :: Url 'Https -> Option 'Https -> AirtablePage -> Req (Maybe ([Listing], AirtablePage))
+    fetchPage _ _ AirtableLast = return Nothing
+    fetchPage url params offset = do
       let offsetParam = case offset of
             AirtableOffset offset' -> "offset" =: offset'
             _ -> mempty
