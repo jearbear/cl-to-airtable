@@ -1,0 +1,10 @@
+{
+  "craigslist": {
+    "url": ""
+  },
+  "airtable": {
+    "api_key": "",
+    "base_id": "",
+    "table_name": ""
+  }
+}
