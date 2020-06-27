@@ -13,10 +13,10 @@ import Data.Foldable (traverse_)
 import Data.List ((\\), nub)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
-import GHC.Generics
+import GHC.Generics (Generic)
 import Network.HTTP.Req hiding (header)
 import Options.Applicative
-import System.Exit
+import System.Exit (die)
 import Text.HTML.Scalpel ((//), (@:), (@=), Scraper, URL, anySelector, attr, chroots, hasClass, scrapeURL, text)
 import Text.ParserCombinators.ReadP
 
@@ -53,11 +53,7 @@ data Listing
         listingLocation :: Text,
         listingMapsUrl :: Text
       }
-  deriving (Show, Generic)
-
--- People tend to spam listings so we only care if the price has changed
-instance Eq Listing where
-  l == l' = listingTitle l == listingTitle l' && listingPrice l == listingPrice l'
+  deriving (Eq, Show, Generic)
 
 instance FromJSON Listing where
   parseJSON = withObject "Listing" $ \obj -> do
@@ -197,7 +193,7 @@ chunks :: Int -> [a] -> [[a]]
 chunks _ [] = []
 chunks n xs = let (ys, zs) = splitAt n xs in ys : chunks n zs
 
-logInfo :: MonadIO m => String -> m ()
+logInfo :: String -> RIO ()
 logInfo = liftIO . putStrLn
 
 main :: IO ()
