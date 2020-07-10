@@ -19,6 +19,7 @@ import Options.Applicative
 import System.Exit (die)
 import Text.HTML.Scalpel ((//), (@:), (@=), Scraper, URL, anySelector, attr, chroots, hasClass, scrapeURL, text)
 import Text.ParserCombinators.ReadP
+import Text.Read (readMaybe)
 
 type RIO a = ReaderT Config IO a
 
@@ -43,36 +44,47 @@ instance FromJSON Config where
     apiKey <- airtable .: "api_key"
     baseId <- airtable .: "base_id"
     tableName <- airtable .: "table_name"
-    return $ Config url apiKey baseId tableName
+    return $
+      Config
+        { configCraigslistUrl = url,
+          configAirtableApiKey = apiKey,
+          configAirtableBaseId = baseId,
+          configAirtableTableName = tableName
+        }
 
 data Listing
   = Listing
       { listingUrl :: URL,
-        listingTitle :: Text,
+        listingId :: Text,
+        listingName :: Text,
         listingPrice :: Int,
-        listingLocation :: Text,
-        listingMapsUrl :: Text
+        listingNeighborhood :: Text,
+        listingLat :: Text,
+        listingLon :: Text
       }
-  deriving (Eq, Show, Generic)
+  deriving (Show, Generic)
+
+instance Eq Listing where
+  l == l' =
+    (listingId l == listingId l')
+      || (listingName l == listingName l' && listingPrice l == listingPrice l')
+      || (listingPrice l == listingPrice l' && listingLat l == listingLat l' && listingLon l == listingLon l')
+
+listingLabelModifier :: String -> String
+listingLabelModifier "listingId" = "ID"
+listingLabelModifier "listingUrl" = "URL"
+listingLabelModifier "listingName" = "Name"
+listingLabelModifier "listingNeighborhood" = "Neighborhood"
+listingLabelModifier "listingPrice" = "Price"
+listingLabelModifier "listingLat" = "Lat"
+listingLabelModifier "listingLon" = "Lon"
+listingLabelModifier s = s
 
 instance FromJSON Listing where
-  parseJSON = withObject "Listing" $ \obj -> do
-    url <- obj .: "Link"
-    title <- obj .: "Name"
-    location <- obj .: "Neighborhood"
-    price <- obj .: "Price"
-    mapsUrl <- obj .: "Location"
-    return $ Listing url title price location mapsUrl
+  parseJSON = genericParseJSON defaultOptions {fieldLabelModifier = listingLabelModifier}
 
 instance ToJSON Listing where
-  toJSON l =
-    object
-      [ "Link" .= listingUrl l,
-        "Name" .= listingTitle l,
-        "Neighborhood" .= listingLocation l,
-        "Price" .= listingPrice l,
-        "Location" .= listingMapsUrl l
-      ]
+  toJSON = genericToJSON defaultOptions {fieldLabelModifier = listingLabelModifier}
 
 data AirtableResponse
   = AirtableResponse
@@ -139,24 +151,46 @@ getListing url = scrapeURL url listing
   where
     listing :: Scraper Text Listing
     listing = do
-      location <- do
-        rawLocation <- text $ ("span" @: [hasClass "postingtitletext"]) // "small"
-        maybe (fail "couldn't parse location") return (parseLocation rawLocation)
+      id' <- do
+        rawId <- text $ ("div" @: [hasClass "postinginfos"]) // ("p" @: [hasClass "postinginfo"])
+        maybe empty return (parseId rawId)
+      neighborhood <- do
+        rawNeighborhood <- text $ ("span" @: [hasClass "postingtitletext"]) // "small"
+        maybe empty return (parseNeighborhood rawNeighborhood)
       price <- do
         rawPrice <- text $ "span" @: [hasClass "price"]
-        maybe (fail "couldn't parse price") return (parsePrice rawPrice)
-      title <- text $ "span" @: ["id" @= "titletextonly"]
-      lat <- attr "data-latitude" $ "div" @: ["id" @= "map"]
-      lon <- attr "data-longitude" $ "div" @: ["id" @= "map"]
-      return $ Listing url title price location ("https://www.google.com/maps/search/" <> lat <> "," <> lon)
+        maybe empty return (parsePrice rawPrice)
+      name <- text $ "span" @: ["id" @= "titletextonly"]
+      (lat, lon) <- do
+        rawLat <- attr "data-latitude" $ "div" @: ["id" @= "map"]
+        rawLon <- attr "data-longitude" $ "div" @: ["id" @= "map"]
+        return (rawLat, rawLon)
+      return $
+        Listing
+          { listingId = id',
+            listingUrl = url,
+            listingName = name,
+            listingPrice = price,
+            listingNeighborhood = neighborhood,
+            listingLat = lat,
+            listingLon = lon
+          }
 
-parseLocation :: Text -> Maybe Text
-parseLocation s = case readP_to_S locationParser (unpack s) of
-  [(loc, _)] -> Just (pack loc)
+parseId :: Text -> Maybe Text
+parseId s = case readP_to_S parser (unpack s) of
+  [(id', _)] -> Just (pack id')
   _ -> Nothing
   where
-    locationParser :: ReadP String
-    locationParser = skipSpaces >> between (char '(') (char ')') (munch (/= ')'))
+    parser :: ReadP String
+    parser = string "post id: " >> munch1 isDigit
+
+parseNeighborhood :: Text -> Maybe Text
+parseNeighborhood s = case readP_to_S parser (unpack s) of
+  [(hood, _)] -> Just (pack hood)
+  _ -> Nothing
+  where
+    parser :: ReadP String
+    parser = skipSpaces >> between (char '(') (char ')') (munch (/= ')'))
 
 parsePrice :: Text -> Maybe Int
 parsePrice s = case readP_to_S priceParser (unpack s) of
@@ -164,7 +198,13 @@ parsePrice s = case readP_to_S priceParser (unpack s) of
   _ -> Nothing
   where
     priceParser :: ReadP Int
-    priceParser = char '$' >> read <$> munch isDigit
+    priceParser = char '$' >> (read <$> munch1 isDigit)
+
+parseGeo :: (Text, Text) -> Maybe (Float, Float)
+parseGeo (lat, lon) = do
+  lat' <- readMaybe (unpack lat)
+  lon' <- readMaybe (unpack lon)
+  return (lat', lon')
 
 getStoredListings :: RIO [Listing]
 getStoredListings = do
@@ -176,7 +216,8 @@ getStoredListings = do
     fetchPage url params offset = do
       let offsetParam = case offset of
             AirtableOffset offset' -> "offset" =: offset'
-            _ -> mempty
+            AirtableFirst -> mempty
+            AirtableLast -> error "not possible"
       resp <- responseBody <$> req GET url NoReqBody jsonResponse (params <> offsetParam)
       let newOffset = maybe AirtableLast AirtableOffset (airtableResponseOffset resp)
       let listings = airtableRecordFields <$> airtableResponseRecords resp
@@ -199,7 +240,7 @@ logInfo = liftIO . putStrLn
 main :: IO ()
 main = do
   args <- execParser opts
-  configFile <- BSL.readFile (argsConfigPath args)
+  configFile <- BSL.readFile $ argsConfigPath args
   case eitherDecode configFile of
     Left err -> die $ "Failed to parse JSON config file: " <> err
     Right config -> flip runReaderT config $ do
