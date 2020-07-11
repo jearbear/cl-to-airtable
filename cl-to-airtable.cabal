@@ -17,4 +17,6 @@ executable cl-to-airtable
                        aeson,
                        monad-extras,
                        mtl,
-                       optparse-applicative
+                       optparse-applicative,
+                       megaparsec,
+                       void

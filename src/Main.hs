@@ -8,20 +8,23 @@ import Control.Monad.Extra (unfoldMapM)
 import Control.Monad.Reader
 import Data.Aeson
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (isDigit)
 import Data.Foldable (traverse_)
 import Data.List ((\\), nub)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
+import Data.Void
 import GHC.Generics (Generic)
 import Network.HTTP.Req hiding (header)
-import Options.Applicative
+import Options.Applicative hiding (some)
 import System.Exit (die)
 import Text.HTML.Scalpel ((//), (@:), (@=), Scraper, URL, anySelector, attr, chroots, hasClass, scrapeURL, text)
-import Text.ParserCombinators.ReadP
+import Text.Megaparsec
+import Text.Megaparsec.Char
 import Text.Read (readMaybe)
 
 type RIO a = ReaderT Config IO a
+
+type MParser a = Parsec Void Text a
 
 newtype Args
   = Args {argsConfigPath :: FilePath}
@@ -177,28 +180,24 @@ getListing url = scrapeURL url listing
           }
 
 parseId :: Text -> Maybe Text
-parseId s = case readP_to_S parser (unpack s) of
-  [(id', _)] -> Just (pack id')
-  _ -> Nothing
+parseId s = pack <$> parseMaybe parser s
   where
-    parser :: ReadP String
-    parser = string "post id: " >> munch1 isDigit
+    parser :: MParser String
+    parser = string "post id: " >> some digitChar
 
 parseNeighborhood :: Text -> Maybe Text
-parseNeighborhood s = case readP_to_S parser (unpack s) of
-  [(hood, _)] -> Just (pack hood)
-  _ -> Nothing
+parseNeighborhood s = pack <$> parseMaybe parser s
   where
-    parser :: ReadP String
-    parser = skipSpaces >> between (char '(') (char ')') (munch (/= ')'))
+    parser :: MParser String
+    parser =
+      let braces = between (char '(') (char ')')
+       in space >> braces (some (anySingleBut ')'))
 
 parsePrice :: Text -> Maybe Int
-parsePrice s = case readP_to_S priceParser (unpack s) of
-  [(price, _)] -> Just price
-  _ -> Nothing
+parsePrice s = read <$> parseMaybe parser s
   where
-    priceParser :: ReadP Int
-    priceParser = char '$' >> (read <$> munch1 isDigit)
+    parser :: MParser String
+    parser = char '$' >> some digitChar
 
 parseGeo :: (Text, Text) -> Maybe (Float, Float)
 parseGeo (lat, lon) = do
