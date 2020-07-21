@@ -7,18 +7,21 @@ module Main where
 import Control.Monad.Extra (unfoldMapM)
 import Control.Monad.Reader
 import Data.Aeson
+import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as BSL
 import Data.Foldable (traverse_)
 import Data.List ((\\), nub)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
+import qualified Data.Vector as V
 import Data.Void
 import GHC.Generics (Generic)
 import Network.HTTP.Req hiding (header)
-import Options.Applicative hiding (some)
+import Options.Applicative hiding (Parser, some)
 import System.Exit (die)
 import Text.HTML.Scalpel ((//), (@:), (@=), Scraper, URL, anySelector, attr, chroots, hasClass, scrapeURL, text)
-import Text.Megaparsec
+import Text.Megaparsec hiding (parseMaybe)
+import qualified Text.Megaparsec as M
 import Text.Megaparsec.Char
 import Text.Read (readMaybe)
 
@@ -89,46 +92,25 @@ instance FromJSON Listing where
 instance ToJSON Listing where
   toJSON = genericToJSON defaultOptions {fieldLabelModifier = listingLabelModifier}
 
-data AirtableResponse
-  = AirtableResponse
-      { airtableResponseRecords :: [AirtableRecord],
-        airtableResponseOffset :: Maybe Text
-      }
-  deriving (Show, Generic)
-
-instance FromJSON AirtableResponse where
-  parseJSON = withObject "AirtableListItem" $ \obj -> do
-    records <- obj .: "records"
-    offset <- obj .:? "offset"
-    return $ AirtableResponse records offset
-
-newtype AirtableRecord
-  = AirtableRecord
-      { airtableRecordFields :: Listing
-      }
-  deriving (Show, Generic)
-
-instance FromJSON AirtableRecord where
-  parseJSON = withObject "AirtableListRecordField" $ \obj -> do
-    fields <- obj .: "fields"
-    return $ AirtableRecord fields
-
-instance ToJSON AirtableRecord where
-  toJSON ai = object ["fields" .= airtableRecordFields ai]
+parseAirtableListResponse :: Value -> Parser ([Listing], AirtablePage)
+parseAirtableListResponse = withObject "airtable list response" $ \obj -> do
+  records <- obj .: "records"
+  listings <- responseRecords records
+  offset <- obj .:? "offset"
+  let offset' = maybe AirtableLast AirtableOffset offset
+  return (listings, offset')
+  where
+    responseRecords :: Value -> Parser [Listing]
+    responseRecords = withArray "airtable list response records" $ \arr ->
+      catMaybes <$> traverse responseRecord (V.toList arr)
+    responseRecord :: Value -> Parser (Maybe Listing)
+    responseRecord = withObject "airtable list response record" $ \obj ->
+      obj .: "fields" <|> return Nothing
 
 data AirtablePage
   = AirtableFirst
   | AirtableOffset Text
   | AirtableLast
-
-newtype AirtableInsert
-  = AirtableInsert
-      { airtableInsertRecords :: [AirtableRecord]
-      }
-  deriving (Show, Generic)
-
-instance ToJSON AirtableInsert where
-  toJSON ai = object ["records" .= airtableInsertRecords ai, "typecast" .= True]
 
 airtableApiUrl :: RIO (Url 'Https, Option 'Https)
 airtableApiUrl = do
@@ -180,13 +162,13 @@ getListing url = scrapeURL url listing
           }
 
 parseId :: Text -> Maybe Text
-parseId s = pack <$> parseMaybe parser s
+parseId s = pack <$> M.parseMaybe parser s
   where
     parser :: MParser String
     parser = string "post id: " >> some digitChar
 
 parseNeighborhood :: Text -> Maybe Text
-parseNeighborhood s = pack <$> parseMaybe parser s
+parseNeighborhood s = pack <$> M.parseMaybe parser s
   where
     parser :: MParser String
     parser =
@@ -194,7 +176,7 @@ parseNeighborhood s = pack <$> parseMaybe parser s
        in space >> braces (some (anySingleBut ')'))
 
 parsePrice :: Text -> Maybe Int
-parsePrice s = read <$> parseMaybe parser s
+parsePrice s = read <$> M.parseMaybe parser s
   where
     parser :: MParser String
     parser = char '$' >> some digitChar
@@ -217,16 +199,15 @@ getStoredListings = do
             AirtableOffset offset' -> "offset" =: offset'
             AirtableFirst -> mempty
             AirtableLast -> error "not possible"
-      resp <- responseBody <$> req GET url NoReqBody jsonResponse (params <> offsetParam)
-      let newOffset = maybe AirtableLast AirtableOffset (airtableResponseOffset resp)
-      let listings = airtableRecordFields <$> airtableResponseRecords resp
-      return (Just (listings, newOffset))
+      resp <- req GET url NoReqBody lbsResponse (params <> offsetParam)
+      return $ (decode . responseBody) resp >>= parseMaybe parseAirtableListResponse
 
 storeListings :: [Listing] -> RIO ()
 storeListings listings = do
   (url, params) <- airtableApiUrl
   runReq defaultHttpConfig $ do
-    let body = AirtableInsert (AirtableRecord <$> listings)
+    let records = [object ["fields" .= l] | l <- listings]
+    let body = object ["records" .= records, "typecast" .= True]
     void $ req POST url (ReqBodyJson body) ignoreResponse params
 
 chunks :: Int -> [a] -> [[a]]

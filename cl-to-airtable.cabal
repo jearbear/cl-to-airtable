@@ -19,4 +19,5 @@ executable cl-to-airtable
                        mtl,
                        optparse-applicative,
                        megaparsec,
+                       vector,
                        void
