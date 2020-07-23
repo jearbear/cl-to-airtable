@@ -94,17 +94,15 @@ instance ToJSON Listing where
 
 parseAirtableListResponse :: Value -> Parser ([Listing], AirtablePage)
 parseAirtableListResponse = withObject "airtable list response" $ \obj -> do
-  records <- obj .: "records"
-  listings <- responseRecords records
-  offset <- obj .:? "offset"
-  let offset' = maybe AirtableLast AirtableOffset offset
-  return (listings, offset')
+  listings <- parseRecords =<< obj .: "records"
+  offset <- maybe AirtableLast AirtableOffset <$> obj .:? "offset"
+  return (listings, offset)
   where
-    responseRecords :: Value -> Parser [Listing]
-    responseRecords = withArray "airtable list response records" $ \arr ->
-      catMaybes <$> traverse responseRecord (V.toList arr)
-    responseRecord :: Value -> Parser (Maybe Listing)
-    responseRecord = withObject "airtable list response record" $ \obj ->
+    parseRecords :: Value -> Parser [Listing]
+    parseRecords = withArray "airtable list response records" $ \arr ->
+      catMaybes <$> traverse parseRecord (V.toList arr)
+    parseRecord :: Value -> Parser (Maybe Listing)
+    parseRecord = withObject "airtable list response record" $ \obj ->
       obj .: "fields" <|> return Nothing
 
 data AirtablePage
@@ -199,8 +197,8 @@ getStoredListings = do
             AirtableOffset offset' -> "offset" =: offset'
             AirtableFirst -> mempty
             AirtableLast -> error "not possible"
-      resp <- req GET url NoReqBody lbsResponse (params <> offsetParam)
-      return $ (decode . responseBody) resp >>= parseMaybe parseAirtableListResponse
+      resp <- req GET url NoReqBody jsonResponse (params <> offsetParam)
+      return $ responseBody resp >>= parseMaybe parseAirtableListResponse
 
 storeListings :: [Listing] -> RIO ()
 storeListings listings = do
